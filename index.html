@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="is">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Tínslu-skönnun</title>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, Roboto, Arial, sans-serif;
+    margin: 0;
+    padding: 16px;
+    background: #f4f4f5;
+    color: #1a1a1a;
+  }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  select, input {
+    width: 100%;
+    padding: 12px;
+    font-size: 16px;
+    border-radius: 8px;
+    border: 1px solid #ccc;
+    margin-bottom: 10px;
+  }
+  #video-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4/3;
+    background: #000;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+  video { width: 100%; height: 100%; object-fit: cover; }
+  .scan-line {
+    position: absolute; left: 0; right: 0; top: 50%;
+    height: 2px; background: #ff3b30; opacity: 0.8;
+  }
+  button {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    background: #1a73e8;
+    color: white;
+    margin-bottom: 8px;
+  }
+  button.secondary { background: #6b7280; }
+  #status { font-size: 14px; color: #555; min-height: 20px; margin-bottom: 8px; }
+  #barcode-display {
+    font-size: 20px;
+    font-weight: 700;
+    text-align: center;
+    padding: 10px;
+    background: #e8f0fe;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    min-height: 28px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 14px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #ddd; }
+  th { color: #666; font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1>Tínslu-skönnun</h1>
+
+  <select id="store"></select>
+
+  <div id="video-wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="scan-line"></div>
+  </div>
+  <div id="status">Ræsi myndavél...</div>
+
+  <div id="barcode-display">—</div>
+  <input id="qty" type="number" inputmode="numeric" value="1" min="1" placeholder="Magn">
+
+  <button id="sendBtn" disabled>Senda í Sheet</button>
+  <button id="manualBtn" class="secondary">Skrá handvirkt</button>
+
+  <table>
+    <thead><tr><th>Tími</th><th>Verslun</th><th>Vörunúmer</th><th>Magn</th></tr></thead>
+    <tbody id="recent"></tbody>
+  </table>
+
+<script>
+  // ====== BREYTTU ÞESSU: Vefslóð Apps Script deployment (endar á /exec) ======
+  const API_URL = 'SETTU_APPS_SCRIPT_URL_HÉR';
+  // =============================================================================
+
+  const VERSLANIR = ['Akureyri','Eiðistorg','Garðabær','Kringlan','Skeifan','Smáralind','Spöng'];
+
+  let currentBarcode = null;
+  let lastScanTime = 0;
+  const codeReader = new ZXing.BrowserMultiFormatReader();
+  const statusEl = document.getElementById('status');
+  const displayEl = document.getElementById('barcode-display');
+  const sendBtn = document.getElementById('sendBtn');
+  const storeSelect = document.getElementById('store');
+
+  storeSelect.innerHTML = VERSLANIR.map(s => `<option value="${s}">${s}</option>`).join('');
+
+  function loadRecent() {
+    fetch(`${API_URL}?action=recent`)
+      .then(r => r.json())
+      .then(rows => {
+        document.getElementById('recent').innerHTML = rows.map(r =>
+          `<tr><td>${r.time}</td><td>${r.store}</td><td>${r.barcode}</td><td>${r.qty}</td></tr>`
+        ).join('');
+      })
+      .catch(() => {});
+  }
+  loadRecent();
+
+  function onDetected(code) {
+    const now = Date.now();
+    if (code === currentBarcode && now - lastScanTime < 2000) return; // forðast tvítekningar
+    currentBarcode = code;
+    lastScanTime = now;
+    displayEl.textContent = code;
+    sendBtn.disabled = false;
+    statusEl.textContent = 'Fann strikamerki ✓';
+    if (navigator.vibrate) navigator.vibrate(80);
+  }
+
+  codeReader.decodeFromConstraints(
+    { video: { facingMode: 'environment' } },
+    'video',
+    (result, err) => {
+      if (result) onDetected(result.getText());
+    }
+  ).then(() => {
+    statusEl.textContent = 'Beindu myndavél á strikamerki';
+  }).catch(err => {
+    statusEl.textContent = 'Ekki tókst að ræsa myndavél: ' + err.message;
+  });
+
+  document.getElementById('manualBtn').onclick = () => {
+    const code = prompt('Sláðu inn vörunúmer handvirkt:');
+    if (code) onDetected(code.trim());
+  };
+
+  sendBtn.onclick = () => {
+    if (!currentBarcode) return;
+    sendBtn.disabled = true;
+    statusEl.textContent = 'Sendi...';
+    const qty = document.getElementById('qty').value || 1;
+    const url = `${API_URL}?action=add&store=${encodeURIComponent(storeSelect.value)}&barcode=${encodeURIComponent(currentBarcode)}&qty=${encodeURIComponent(qty)}`;
+    fetch(url)
+      .then(r => r.json())
+      .then(res => {
+        if (res.ok) {
+          statusEl.textContent = 'Vistað ✓';
+          displayEl.textContent = '—';
+          currentBarcode = null;
+          document.getElementById('qty').value = 1;
+          loadRecent();
+        } else {
+          statusEl.textContent = 'Villa: ' + (res.error || 'óþekkt villa');
+        }
+        sendBtn.disabled = false;
+      })
+      .catch(err => {
+        statusEl.textContent = 'Villa við sendingu: ' + err.message;
+        sendBtn.disabled = false;
+      });
+  };
+</script>
+</body>
+</html>
